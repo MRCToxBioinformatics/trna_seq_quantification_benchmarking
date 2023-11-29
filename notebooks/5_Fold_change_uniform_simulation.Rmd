@@ -1,0 +1,139 @@
+---
+title: "Fold changes in simulations"
+author: "Tom Smith"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: show
+    toc: true
+  pdf_document: default
+---
+
+Here, we compute the fold changes between different cell lines when simulating uniform counts per tRNA sequence
+
+```{r}
+library(here)
+library(dplyr)
+library(tidyr)
+```
+
+
+Define the infiles
+```{r}
+infiles <- NULL
+infiles[['isodecoder']] = Sys.glob(here('input/*final_results.dir/simulation_uniform*CompareTruthEstimateIsodecoder.tsv'))
+
+infiles[['mimseq_isodecoder']] = Sys.glob(here('input/*final_results.dir/simulation_uniform*CompareTruthEstimateMimseqIsodecoder.tsv'))
+
+infiles[['anticodon']] = Sys.glob(here('input/*final_results.dir/simulation_uniform*CompareTruthEstimateAnticodon.tsv'))
+
+infiles[['individual']] = Sys.glob(here('input/*final_results.dir/simulation_uniform*CompareTruthEstimate.tsv'))
+
+print(infiles)
+```
+
+Read in data.
+```{r}
+counts_vs_truth <- infiles %>% lapply(function(x)
+  lapply(x, function(y){
+    data <- read.delim(y, sep='\t') %>%
+      group_by(input_file, simulation_n, quant_method) %>%#, tally_method) %>%
+      mutate(NumReads_norm=1E6*NumReads/(sum(NumReads)),
+             truth_norm=1E6*truth/(sum(truth))) %>%
+      mutate(trna_seq_method=sapply(strsplit(input_file, split='_'), '[[', 1)) %>%
+      mutate(sample=gsub('(mimtRNAseq_Hsap_)', '', input_file)) %>%
+      filter(!(quant_method=='shrimp' & tally_method=='mapq10'))
+
+    return(data)
+
+  }) %>% bind_rows())
+# some renaming is required for the 
+counts_vs_truth$anticodon <- counts_vs_truth$anticodon %>%
+  mutate(Name=recode(Name,
+                     'Homo_sapiens_MTtRNA-Leu-TAG'='Homo_sapiens_MTtRNA-Leu1-TAG',
+                     'Homo_sapiens_MTtRNA-Leu-TAA'='Homo_sapiens_MTtRNA-Leu2-TAA',
+                     'Homo_sapiens_MTtRNA-Ser-GCT'='Homo_sapiens_MTtRNA-Ser1-GCT',
+                     'Homo_sapiens_MTtRNA-Ser-TGA'='Homo_sapiens_MTtRNA-Ser2-TGA'))
+
+
+
+```
+
+
+
+Define the desired order for the tally methods for plotting purposes.
+```{r}
+tally_method_levels <- c('random_single',
+                         'fractional',
+                         'no_multi',
+                         'mapq10',
+                         'decision',
+                         'salmon',
+                         'mimseq')
+
+```
+
+
+Determine the fold-differences between the first two cell lines (or HESC0 vs HESC5 for ALL-tRNAseq) from the uniform simulation
+```{r}
+per_trna_seq_method_tables <- counts_vs_truth %>% lapply(function(x){
+  x <- x %>%
+    filter(truth!=0) %>%
+    mutate(input_file=gsub('Hsap_', '', input_file)) %>%
+    mutate(input_file=gsub('hESC_', 'hESC', input_file)) %>%
+    separate(input_file, into=c(NA, 'cell_line', 'replicate'), remove=FALSE) %>%
+    group_by(Name, trna_seq_method, quant_method, tally_method, cell_line) %>%
+    summarise(NumReads_norm=mean(NumReads_norm, na.rm=TRUE))
+
+  per_trna_seq_method_table <- unique(x$trna_seq_method) %>%
+    lapply(function(tsm){
+      x %>%
+        filter(trna_seq_method==tsm)
+    })
+  
+  names(per_trna_seq_method_table) <- unique(x$trna_seq_method)
+  
+  return(per_trna_seq_method_table)
+})
+
+
+
+uniform_differences <- NULL
+for(level in names(per_trna_seq_method_tables)){
+  uniform_differences[[level]] <- NULL
+  for(seqmethod in names(per_trna_seq_method_tables[[level]])){
+    .data <- per_trna_seq_method_tables[[level]][[seqmethod]]
+    cell_lines <- sort(unique(.data$cell_line))
+    if(length(cell_lines)==1){
+      next()
+    } else{
+      cell_lines <- cell_lines[1:2]
+    }
+    print(c(level, seqmethod, cell_lines))
+    .data <- .data %>% filter(cell_line  %in% cell_lines) %>%
+      pivot_wider(names_from=cell_line, values_from = NumReads_norm)
+    .data$diff <- .data[[cell_lines[1]]]/.data[[cell_lines[2]]]
+    .data$mean <- (.data[[cell_lines[1]]] + .data[[cell_lines[2]]] ) / 2
+    uniform_differences[[level]][[seqmethod]] <- .data
+  }
+}
+
+
+
+saveRDS(uniform_differences, '../results/uniform_differences.rds')
+
+```
+
+
+```{r}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
+

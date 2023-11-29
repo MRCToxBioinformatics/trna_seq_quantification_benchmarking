@@ -1,0 +1,105 @@
+---
+title: "Optimising alignment parameterisations"
+author: "Tom Smith"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: show
+    toc: true
+
+---
+
+Here, we compare the results for Bowtie2 with different parameterisation to see which gives the most accurate quantification
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(camprotR)
+library(here)
+
+source(here('R/plot_aes.R'))
+```
+
+Define infiles
+```{r}
+truth2assignment_infiles <- Sys.glob(here('input/*_final_results.dir/bowtie2*_truth2assignment_no_errors_*.tsv'))
+```
+
+Function to summarise the alignment inaccuracies
+```{r}
+
+summarise_inaccuracy <- function(infile, variables=c('D', 'L', 'N'), col_suffix='isodecoder'){
+  
+  truth2assignment_df <- read.delim(infile)
+  
+  truth_col = paste('truth', col_suffix, sep='_')
+  assignment_col = paste('assignment', col_suffix, sep='_')
+  
+  total_counts <- truth2assignment_df %>%
+    group_by_at(all_of(c(variables, truth_col))) %>%
+    summarise(total_count=sum(count))
+  
+  on_target <- truth2assignment_df %>% filter(!!sym(truth_col)==!!sym(assignment_col)) %>%
+    group_by_at(all_of(c(variables, truth_col))) %>%
+    summarise(correct_count=sum(count))
+  
+  inaccuracy <- total_counts %>% merge(on_target, by=c(variables, truth_col)) %>%
+    group_by_at(all_of(variables)) %>%
+    summarise(total_count=sum(total_count), correct_count=sum(correct_count)) %>%
+    mutate(incorrect=100*(1-(correct_count/total_count)))
+  
+  return(inaccuracy)
+}
+
+```
+
+For each infile, summarise the inaccuracy.
+```{r}
+results <- NULL
+
+for(infile in truth2assignment_infiles){
+  infile_base = basename(infile)
+  species = strsplit(print(basename(dirname(infile))), '_')[[1]][[1]]
+  level = strsplit(infile_base, split='_|\\.')[[1]][5]
+  
+  variables=c('D', 'L', 'N')
+  
+  results[[paste(level, species, sep='_')]] <- summarise_inaccuracy(infile, variables, level)
+  
+}
+```
+Bind together the results from each infile and plot
+```{r}
+max_incorrect <- results %>% sapply(function(x) max(x$incorrect))  %>% max()
+
+p <- bind_rows(results, .id='method') %>%
+  separate(method, into=c('level', 'species')) %>%
+  filter(N==1) %>%
+  mutate(species=case_when(species=='mm' ~'Mus musculus',
+                         species=='hs' ~'Homo sapeins')) %>%
+  mutate(level=case_when(level=='isodecoder' ~'Transcript ID',
+                         level=='anticodon' ~'Anticodon')) %>%
+  ggplot(aes(D, incorrect, colour=factor(L))) +
+  geom_point() +
+  geom_line() +
+  scale_colour_viridis_d(name='-L (Seed length)') +
+  facet_grid(level~species) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  xlab('-D')+
+  ylab('Incorrect aligments (%)') +
+  ggtitle('Bowtie2') +
+  theme(strip.background=element_blank(), plot.title=element_text(hjust=0.5)) +
+  xlim(0, NA) +
+  ylim(0, max_incorrect)
+
+print(p)
+
+ggsave( here('results/plots/bowtie2_parameterisation.png'))
+ggsave(here('results/plots/bowtie2_parameterisation.pdf'))
+
+```
+
+```{r}
+sessionInfo()
+```
+

@@ -1,0 +1,605 @@
+---
+title: "Comparing estimated counts to truth"
+author: "Tom Smith"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: show
+    toc: true
+---
+
+Here, we compare the estimated counts with the ground truth.
+
+```{r}
+library(here)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(camprotR)
+library(ggbeeswarm)
+library(pheatmap)
+library(RColorBrewer)
+
+
+source('../R/plot_aes.R')
+```
+
+Define the infiles
+```{r}
+infiles <- NULL
+infiles[['isodecoder']] = Sys.glob(here('input/*final_results.dir/simulation_realistic*CompareTruthEstimateIsodecoder.tsv'))
+
+infiles[['mimseq_isodecoder']] = Sys.glob(here('input/*final_results.dir/simulation_realistic*CompareTruthEstimateMimseqIsodecoder.tsv'))
+
+infiles[['anticodon']] = Sys.glob(here('input/*final_results.dir/simulation_realistic*CompareTruthEstimateAnticodon.tsv'))
+
+infiles[['individual']] = Sys.glob(here('input/*final_results.dir/simulation_realistic*CompareTruthEstimate.tsv'))
+```
+
+Read the infiles and normalise the estimated read counts (`NumReads`) and the ground truth (`truth`) by the total counts.
+```{r}
+counts_vs_truth <- infiles %>% lapply(function(x)
+  lapply(x, function(y){
+    data <- read.delim(y, sep='\t') %>%
+      group_by(input_file, simulation_n, quant_method, tally_method) %>%
+      mutate(NumReads_norm=1E6*NumReads/(sum(NumReads)),
+             truth_norm=1E6*truth/(sum(truth))) %>%
+      mutate(trna_seq_method=sapply(strsplit(input_file, split='_'), '[[', 1)) %>%
+      mutate(species=ifelse(trna_seq_method == 'quantMtRNAseq', 'Mus musculus', 'Homo sapiens')) %>%
+      mutate(sample=gsub('mimtRNAseq_Hsap_', '', input_file))
+
+    return(data)
+
+  }) %>% bind_rows())
+
+# some renaming is required for the Mt Leu and Ser genes
+counts_vs_truth$anticodon <- counts_vs_truth$anticodon %>%
+  mutate(Name=recode(Name,
+                     'Homo_sapiens_MTtRNA-Leu-TAG'='Homo_sapiens_MTtRNA-Leu1-TAG',
+                     'Homo_sapiens_MTtRNA-Leu-TAA'='Homo_sapiens_MTtRNA-Leu2-TAA',
+                     'Homo_sapiens_MTtRNA-Ser-GCT'='Homo_sapiens_MTtRNA-Ser1-GCT',
+                     'Homo_sapiens_MTtRNA-Ser-TGA'='Homo_sapiens_MTtRNA-Ser2-TGA'))
+
+
+
+```
+
+
+
+How many reads were used for the quantifications.
+
+```{r}
+to_plot <- counts_vs_truth %>%
+  bind_rows(.id='level') %>%
+  filter(level %in% c('anticodon', 'mimseq_isodecoder')) %>%
+  mutate(tally_method=lapply(tally_method, function(x) tally_methods_rename[[x]])) %>%
+  mutate(tally_method=factor(tally_method, levels=tally_methods_rename)) %>%
+  filter(!grepl('shrimp', quant_method)) %>%
+  group_by(level, input_file, simulation_n, quant_method, tally_method, trna_seq_method, sample, species) %>%
+  summarise(sum_truth=sum(truth), sum_numreads=sum(NumReads)) %>%
+  mutate(fraction_assigned=sum_numreads/sum_truth) %>%
+  rowwise() %>%
+  mutate(level=rename_level(level)) %>%
+  mutate(quant_method=factor(rename_quant(quant_method), levels=quant_rename)) %>%
+  mutate(trna_seq_method=factor(rename_trna_method(trna_seq_method), levels=trna_method_rename))
+
+p <- to_plot %>%
+  ggplot(aes(trna_seq_method, fraction_assigned, colour=tally_method)) +
+  geom_boxplot(position='dodge') +
+  theme_bw(base_size=12) +
+  xlab('') +
+  ylab('Reads Assigned') +
+  facet_grid(level~., scales='free_x') +
+  theme(strip.background=element_blank(),
+        panel.border = element_blank(), 
+        axis.line = element_line(colour = "black", size = 0.5),
+        panel.grid=element_blank(),
+        axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
+  scale_colour_manual(values=get_cat_palette(7), name='Read tally method')
+
+print(p)
+ggsave(here('results/plots/reads_assigned_anticodon_mimseqisodecoder.png'))
+ggsave(here('results/plots/reads_assigned_anticodon_mimseqisodecoder.pdf'))
+```
+Repeat the plot at all levels of quantification
+
+```{r, fig.height=6}
+to_plot <- counts_vs_truth %>%
+  bind_rows(.id='level') %>%
+  mutate(tally_method=lapply(tally_method, function(x) tally_methods_rename[[x]])) %>%
+  mutate(tally_method=factor(tally_method, levels=tally_methods_rename)) %>%
+  filter(!grepl('shrimp', quant_method)) %>%
+  group_by(level, input_file, simulation_n, quant_method, tally_method, trna_seq_method, sample, species) %>%
+  summarise(sum_truth=sum(truth), sum_numreads=sum(NumReads)) %>%
+  mutate(fraction_assigned=sum_numreads/sum_truth) %>%
+  rowwise() %>%
+  mutate(level=factor(rename_level(level), levels=levels_rename)) %>%
+  mutate(quant_method=factor(rename_quant(quant_method), levels=quant_rename)) %>%
+  mutate(trna_seq_method=factor(rename_trna_method(trna_seq_method), levels=trna_method_rename))
+
+p <- to_plot %>%
+  ggplot(aes(trna_seq_method, fraction_assigned, colour=tally_method)) +
+  geom_boxplot(position='dodge') +
+  theme_bw(base_size=12) +
+  xlab('') +
+  ylab('Reads Assigned') +
+  facet_grid(level~., scales='free_x') +
+  theme(strip.background=element_blank(),
+        panel.border = element_blank(), 
+        axis.line = element_line(colour = "black", size = 0.5),
+        panel.grid=element_blank(),
+        axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
+  scale_colour_manual(values=get_cat_palette(7), name='Read tally method')
+
+print(p)
+ggsave(here('results/plots/reads_assigned_all.png'))
+ggsave(here('results/plots/reads_assigned_all.pdf'))
+```
+
+Define functions to calculate the MSE.
+
+```{r}
+get_mse <- function(truth, estimate){
+  mse <- mean((truth - estimate)^2)
+  return(mse)
+}
+
+get_mse_normed <- function(truth, estimate){
+  truth_norm = truth / sum(truth)
+  estimate_norm = estimate / sum(estimate)
+  
+  mse <- mean((truth_norm - estimate_norm)^2)
+  return(mse)
+}
+
+```
+
+
+
+Calculate the MSE and correlation for each set of simulated samples for a tRNA gene for a given 
+combination of the tRNA-seq method, quantification method.
+```{r, warning=FALSE}
+inter_sample_metrics <- counts_vs_truth %>% lapply(function(x){
+  
+  x <- x %>% filter(!grepl('coli', Name)) %>% filter(!grepl('Und', Name))
+  
+  keep <- x %>% 
+    group_by(trna_seq_method, quant_method, tally_method, simulation_n, Name) %>%
+    summarise(n_values=sum(truth!=0)) %>%
+    filter(n_values>0)
+  
+  x %>%
+    merge(keep, by=c('trna_seq_method', 'quant_method', 'tally_method', 'simulation_n', 'Name')) %>%
+    group_by(trna_seq_method, quant_method, tally_method, simulation_n, Name, species) %>%
+    summarise(p_cor=cor(log(NumReads+1), log(truth+1)),
+              s_cor=cor(log(NumReads+1), log(truth+1), method='spearman'),
+              min_NumReads=min(NumReads),
+              min_truth=min(truth),
+              mse=get_mse(truth, NumReads),
+              rmse=sqrt(mse),
+              norm_mse=get_mse_normed(truth, NumReads),
+              norm_rmse=sqrt(norm_mse))
+})
+
+
+
+```
+
+
+Summarise the error metrics over all anticodons etc.
+```{r}
+to_plot_summary <- lapply(names(inter_sample_metrics), function(name){
+      data_to_use <- inter_sample_metrics[[name]] %>% filter(is.finite(p_cor), is.finite(rmse)) %>% ungroup() %>%
+      mutate(tally_method=lapply(tally_method, function(x) tally_methods_rename[[x]])) %>%
+      mutate(tally_method=factor(tally_method, levels=tally_methods_rename))
+
+    n_methods <- data_to_use %>% select(quant_method, tally_method) %>% unique() %>% nrow()
+    
+    keep <- data_to_use %>%
+          group_by(Name, simulation_n, trna_seq_method) %>%
+          tally() %>%
+          filter(n==n_methods)
+  
+    to_plot <- data_to_use %>%
+      merge(keep, by=c('Name', 'trna_seq_method', 'simulation_n')) %>%
+      mutate(level=rename_level(name)) %>%
+      group_by(level, trna_seq_method, quant_method, tally_method, species) %>%
+      summarise(mean_rmse=mean(norm_rmse),
+                mean_cor=mean(p_cor))
+}) %>% bind_rows() %>%
+  rowwise() %>%
+  mutate(quant_method=factor(rename_quant(quant_method), levels=quant_rename)) %>%
+  mutate(trna_seq_method=factor(rename_trna_method(trna_seq_method), levels=trna_method_rename)) %>%
+  ungroup() %>%
+  mutate(level=factor(level, levels=unname(levels_rename)))
+
+```
+
+
+Identify the best/worst performing tally method and then plot heatmap with best/worst highlighted. Plot only Bowtie2/mimseq at anticodon/mimseq isodecoder level.
+```{r, fig.height=9, fig.width=8}
+to_plot_summmary_finalised <- to_plot_summary %>%
+  filter(quant_method!='SHRiMP') %>%
+  filter(level %in% c('Anticodon', 'Mimseq isodecoder'))
+
+highlight_best_cor <- to_plot_summmary_finalised %>%
+  group_by(level, trna_seq_method) %>%
+  slice_max(n=1, order_by=mean_cor) %>%
+  mutate(label='\U002A')
+
+highlight_best_rmse <- to_plot_summmary_finalised %>%
+  group_by(level, trna_seq_method) %>%
+  slice_min(n=1, order_by=mean_rmse) %>%
+  mutate(label='\U002A')
+
+highlight_worst_cor <- to_plot_summmary_finalised %>%
+  group_by(level, trna_seq_method) %>%
+  slice_min(n=1, order_by=mean_cor) %>%
+  mutate(label='\U25BC')
+
+highlight_worst_rmse <- to_plot_summmary_finalised %>%
+  group_by(level, trna_seq_method) %>%
+  slice_max(n=1, order_by=mean_rmse) %>%
+  mutate(label='\U25BC')
+
+
+
+p <- to_plot_summmary_finalised %>%
+  ggplot(aes(trna_seq_method, tally_method)) +
+  xlab('') +
+  ylab('') +
+  facet_grid(level~.) +
+  theme_camprot(border=FALSE, base_family='sans', base_size=15, aspect_square=FALSE) +
+    theme(strip.background=element_blank(),
+        panel.grid=element_blank(),
+        strip.text=element_text(size=15),
+        axis.text.x=element_text(angle=45, vjust=1, hjust=1))
+
+p1 <- p +
+        geom_tile(aes(fill=mean_rmse)) +
+        scale_fill_continuous(high='grey90', low=get_cat_palette(2)[2], name='Mean RMSE',
+                              limits=c(0,0.2), breaks=seq(0,0.2,0.04)) +
+        geom_text(aes(label=round(mean_rmse, 3))) +
+        geom_text(data=highlight_best_rmse, aes(label=label), size=10, colour='black', vjust=0.25) +
+        geom_text(data=highlight_worst_rmse, aes(label=label), size=5, colour='black', vjust=-0.5)
+
+p2 <- p +
+        geom_tile(aes(fill=mean_cor)) +
+        scale_fill_continuous(low='grey90', high=get_cat_palette(3)[3], name='Mean\nPearson\nCorrelation',
+                              limits=c(0.6,1), breaks=seq(0.6,1,0.1)) +
+        geom_text(aes(label=round(mean_cor, 3))) +
+        geom_text(data=highlight_best_cor, aes(label=label), size=10, colour='black', vjust=0.25) +
+        geom_text(data=highlight_worst_cor, aes(label=label), size=5, colour='black', vjust=-0.5)
+
+print(p1)
+print(p2)
+
+ggsave(here('results/plots/mean_rmse_bowtie2_mimseq.png'), plot=p1)
+
+# ggsave doesn't work for some unicode characters. Using solution proposed here:
+# https://stackoverflow.com/questions/44547350/corrupted-utf-characters-in-pdf-plots-generated-by-r/44548861#44548861
+dev.off()
+quartz(type = 'pdf', file = here('results/plots/mean_rmse_bowtie2_mimseq.pdf'), height = 9, width=6)
+print(p1)
+
+ggsave(here('results/plots/mean_cor_bowtie2_mimseq.png'), plot=p2)
+
+dev.off()
+quartz(type = 'pdf', file = here('results/plots/mean_cor_bowtie2_mimseq.pdf'), height = 9, width=6)
+print(p2)
+
+
+```
+
+
+Repeat the plotting for all aligners and all levels of quantification.
+```{r, fig.height=12, fig.width=10}
+
+highlight_best_cor_all <- to_plot_summary %>%
+  group_by(level, trna_seq_method) %>%
+  slice_max(n=1, order_by=mean_cor) %>%
+  mutate(label='\u002A')
+
+highlight_best_rmse_all <- to_plot_summary %>%
+  group_by(level, trna_seq_method) %>%
+  slice_min(n=1, order_by=mean_rmse) %>%
+  mutate(label='\u002A')
+
+highlight_worst_cor_all <- to_plot_summary %>%
+  group_by(level, trna_seq_method) %>%
+  slice_min(n=1, order_by=mean_cor) %>%
+  mutate(label='\u25BC')
+
+highlight_worst_rmse_all <- to_plot_summary %>%
+  group_by(level, trna_seq_method) %>%
+  slice_max(n=1, order_by=mean_rmse) %>%
+  mutate(label='\u25BC')
+
+
+p <- to_plot_summary %>%
+  ggplot(aes(trna_seq_method, tally_method)) +
+  xlab('') +
+  ylab('') +
+  facet_grid(level~species, scales='free') +
+  theme_camprot(border=FALSE, base_family='sans', base_size=15, aspect_square=FALSE) +
+    theme(strip.background=element_blank(),
+        panel.grid=element_blank(),
+        strip.text=element_text(size=15),
+        axis.text.x=element_text(angle=45, vjust=1, hjust=1))
+
+        
+  
+p <- to_plot_summary %>%
+  ggplot(aes(trna_seq_method, tally_method)) +
+  xlab('') +
+  ylab('') +
+  facet_grid(quant_method~level, scales='free', space='free') +
+  theme_camprot(border=FALSE, base_family='sans', base_size=15, aspect_square=FALSE) +
+    theme(strip.background=element_blank(),
+        panel.grid=element_blank(),
+        strip.text=element_text(size=15),
+        panel.spacing.y=unit(5, 'mm'),
+        axis.text.x=element_text(angle=45, hjust=1, vjust=1))
+
+p1 <- p +
+        geom_tile(aes(fill=mean_rmse)) +
+        scale_fill_continuous(high='grey90', low=get_cat_palette(2)[2], name='Mean RMSE',
+                              limits=c(0,0.2), breaks=seq(0,0.2,0.04)) +
+        geom_text(aes(label=round(mean_rmse, 2))) +
+        geom_tile(data=highlight_best_rmse_all, colour='black', fill=NA, size=1)
+
+p2 <- p +
+        geom_tile(aes(fill=mean_cor)) +
+        scale_fill_continuous(low='grey90', high=get_cat_palette(3)[3], name='Mean\nPearson\nCorrelation',
+                      limits=c(0.6,1), breaks=seq(0.6,1,0.1)) +
+        geom_text(aes(label=round(mean_cor, 2))) +
+        geom_tile(data=highlight_best_cor_all, colour='black', fill=NA, size=1)
+
+remove_clip <- function(p){
+  pg <- ggplotGrob(p)
+
+  for(i in which(grepl("strip", pg$layout$name))){
+    pg$grobs[[i]]$layout$clip <- "off"
+  }
+    
+  return(pg)
+}
+  
+
+pg1 <- remove_clip(p1)
+grid::grid.draw(pg1)  
+
+png(here('results/plots/mean_rmse_all.png'), width=10, height=12, units='in', res=400)
+grid::grid.draw(pg1)
+dev.off()
+
+pdf(here('results/plots/mean_rmse_all.pdf'), width=10, height=12)
+grid::grid.draw(pg1)
+dev.off()
+
+pg2 <- remove_clip(p2)
+grid::grid.draw(pg2)  
+
+png(here('results/plots/mean_cor_all.png'), width=10, height=12, units='in', res=400)
+grid::grid.draw(pg2)
+dev.off()
+
+pdf(here('results/plots/mean_cor_all.pdf'), width=10, height=12)
+grid::grid.draw(pg2)
+dev.off()
+```
+
+
+```{r}
+tally_method_levels <- c('random_single',
+                         'fractional',
+                         'no_multi',
+                         'mapq10',
+                         'decision',
+                         'salmon',
+                         'mimseq')
+```
+
+
+Summarise the mean error metrics for each anticodon
+```{r, fig.height=10, fig.wdith=10}
+to_plot <- inter_sample_metrics$anticodon %>%
+  mutate(Name=gsub('Homo_sapiens_mito_tRNA|Homo_sapiens_MTtRNA|Mus_musculus_mito_tRNA|Mus_musculus_MTtRNA', 'MT',
+                   gsub('Homo_sapiens_tRNA-|Mus_musculus_tRNA-', '', Name))) %>%
+  group_by(trna_seq_method, quant_method, tally_method, Name) %>%
+  summarise(norm_rmse=mean(norm_rmse, na.rm=TRUE),
+            p_cor=mean(p_cor, na.rm=TRUE)) %>%
+  rowwise() %>%
+  mutate(tally_method=rename_method(tally_method)) %>%
+  ungroup()
+
+
+```
+
+Reformat to wider format for `pheatmap`. Using just YAMATseq and Bowtie2/mimseq.
+
+```{r}
+heatmap_data_cor <- to_plot %>% filter(!grepl('MT', Name), quant_method!='shrimp', trna_seq_method=='YAMATseq') %>%
+  pivot_wider(id_cols=Name, values_from=p_cor, names_from=tally_method) %>%
+  tibble::column_to_rownames('Name')
+```
+
+Plot the heatmaps.
+
+```{r, fig.height=6, fig.width=6}
+
+filename = here("results/plots/mimtRNAseq_p_cor_anticodon.png")
+filename2 = here("results/plots/mimtRNAseq_p_cor_anticodon.pdf")
+
+
+pheatmap(heatmap_data_cor, color=colorRampPalette(c(get_cat_palette(2)[2], 'grey95', get_cat_palette(1)))(50),
+         breaks=seq(-0.5,1,length.out=50),
+         annotation_colors=NULL, cluster_rows=TRUE, show_rownames=TRUE,
+         cluster_cols=TRUE, clustering_method='average', fontsize_row=7,
+         labels_col=colnames(heatmap_data_cor))
+
+pheatmap(heatmap_data_cor, color=colorRampPalette(c(get_cat_palette(2)[2], 'grey95', get_cat_palette(1)))(50),
+         breaks=seq(-0.5,1,length.out=50),
+         annotation_colors=NULL, cluster_rows=TRUE, show_rownames=TRUE,
+         cluster_cols=TRUE, clustering_method='average', fontsize_row=7,
+         labels_col=colnames(heatmap_data_cor),
+         filename=filename)
+
+pheatmap(heatmap_data_cor, color=colorRampPalette(c(get_cat_palette(2)[2], 'grey95', get_cat_palette(1)))(50),
+         breaks=seq(-0.5,1,length.out=50),
+         annotation_colors=NULL, cluster_rows=TRUE, show_rownames=TRUE,
+         cluster_cols=TRUE, clustering_method='average', fontsize_row=7,
+         labels_col=colnames(heatmap_data_cor),
+         filename=filename2)
+
+```
+
+
+Below, we pick the 6 anticodons with the biggest difference between bowtie2-decision and mimseq
+
+Plot scatter plots of truth vs estimates for YAMATseq for the anticodons with the greatest difference between Decision and mimseq.
+```{r, fig.height=8, fig.width=8}
+
+aoi <- heatmap_data_cor %>% mutate(diff=abs(Decision-Mimseq)) %>% arrange(desc(diff)) %>% head(6) 
+aoi <- rownames(aoi)
+
+tsm <- 'YAMATseq'
+
+p <- counts_vs_truth$anticodon %>%
+  filter(trna_seq_method==tsm, grepl(paste(aoi, collapse='|'), Name), quant_method!='shrimp') %>%
+  filter(trna_seq_method=='YAMATseq') %>%
+  filter(!grepl('MT', Name)) %>%
+  mutate(Name=factor(gsub('Homo_sapiens_tRNA-|Mus_musculus_tRNA-', '', Name), levels=aoi))%>%
+  mutate(tally_method=lapply(tally_method, function(x) tally_methods_rename[[x]])) %>%
+  mutate(tally_method=factor(tally_method, levels=tally_methods_rename)) %>%
+  ggplot(aes(log2(truth), log2(NumReads))) +
+  geom_point(size=0.5, alpha=0.5) +
+  #theme_camprot(base_size=12) +
+  facet_grid(Name~tally_method) +
+  theme(strip.background=element_blank()) +
+  geom_abline(slope=1, linetype=2, colour='grey') +
+  theme_bw(base_size=15, base_family='sans') +
+  theme(strip.background=element_blank(), panel.grid=element_blank(),
+        panel.border=element_blank(), aspect.ratio=1) +
+  xlim(0, 20) +
+  ylim(0, 20) +
+  xlab('Truth (log2)') +
+  ylab('Estimate (log2)')
+  
+print(p)
+
+pg <- remove_clip(p)
+grid::grid.draw(pg)  
+
+png(here('results/plots/aoi_truth_vs_estimate_scatter.png'), width=8, height=8, units='in', res=400)
+grid::grid.draw(pg)
+dev.off()
+
+pdf(here('results/plots/aoi_truth_vs_estimate_scatter.pdf'), width=8, height=8)
+grid::grid.draw(pg)
+dev.off()
+
+
+```
+
+Plot the correlation for YAMAT-Seq for the anticodons with the greatest difference between Decision and mimseq.
+
+```{r, fig.height=4, fig.width=4}
+
+p <- inter_sample_metrics$anticodon %>% filter(grepl(paste(aoi, collapse='|'), Name), quant_method!='shrimp') %>%
+  filter(!grepl('MT', Name)) %>%
+  filter(trna_seq_method=='YAMATseq') %>%
+  mutate(tally_method=lapply(tally_method, function(x) tally_methods_rename[[x]])) %>%
+  mutate(tally_method=factor(tally_method, levels=tally_methods_rename)) %>%
+  mutate(Name=gsub('Homo_sapiens_mito_tRNA|Homo_sapiens_MTtRNA|Mus_musculus_mito_tRNA|Mus_musculus_MTtRNA', 'MT',
+                   gsub('Homo_sapiens_tRNA-|Mus_musculus_tRNA-', '', Name))) %>%
+  mutate(Name=factor(Name, levels=aoi)) %>%
+      ggplot(aes(Name, p_cor, colour=tally_method, group=tally_method)) +
+    stat_summary(geom='point', fun='mean',  position=position_dodge(width=1)) +
+    stat_summary(geom='errorbar',  position=position_dodge(width=1)) +
+    facet_wrap(~Name, scales='free_x', nrow=2) +
+    #theme_camprot(base_size=10) +
+    scale_colour_manual(values=get_cat_palette(7), name='') +
+    xlab('') +
+  theme_camprot(base_family='sans', base_size=10, border=FALSE) +
+  theme(strip.text=element_blank()) +
+  ylim(NA, 1) +
+  ylab('Pearson correlation')
+
+print(p)
+ggsave(here('results/plots/p_cor_anticodon_highlight.png'), plot=p)
+ggsave(here('results/plots/p_cor_anticodon_highlight.pdf'), plot=p)
+
+
+
+```
+
+
+Read in the results from notebook 4 regarding the fraction of correct read assignments.
+
+```{r}
+diff_quant_seq_methods <- readRDS('../results/diff_quant_seq_methods.rds')
+diff_quant_seq_methods <- diff_quant_seq_methods %>% lapply(function(x) filter(x, is.finite(fraction)))
+```
+
+Correlate the fraction of read assignments vs the Pearson correlation coefficient.
+
+```{r}
+
+to_plot_metrics_vs_correct_alignment_rate <- diff_quant_seq_methods %>% names() %>%
+  lapply(function(level){
+    inter_sample_metrics[[level]] %>%
+      mutate(truth=gsub('Homo_sapiens_tRNA-|Homo_sapiens_tRX-|Mus_musculus_tRNA-|Mus_musculus_tRX-', '',
+                        gsub('Homo_sapiens_MTtRNA|Mus_musculus_MTtRNA', 'MT', Name))) %>%
+      group_by(truth, trna_seq_method, quant_method, tally_method) %>%
+      summarise(mean_p_cor=mean(p_cor, na.rm=TRUE),
+                mean_rmse=mean(norm_rmse, na.rm=TRUE)) %>%
+      filter(is.finite(mean_p_cor)) %>%
+      merge(diff_quant_seq_methods[[level]], by=c('truth', 'trna_seq_method', 'quant_method'), all.x=TRUE)
+  })
+  
+names(to_plot_metrics_vs_correct_alignment_rate) <- names(diff_quant_seq_methods)
+
+for(level in names(to_plot_metrics_vs_correct_alignment_rate)){
+  p <- to_plot_metrics_vs_correct_alignment_rate[[level]] %>%
+    mutate(tally_method=lapply(tally_method, function(x) tally_methods_rename[[x]])) %>%
+    mutate(tally_method=factor(tally_method, levels=tally_methods_rename)) %>%
+    mutate(trna_seq_method=unlist(lapply(trna_seq_method, rename_trna_method))) %>%
+    filter(quant_method!='shrimp') %>%
+    ggplot(aes(fraction, mean_p_cor)) +
+    geom_point(size=0.25, alpha=0.25) +
+    geom_smooth(method='lm', se=FALSE) +
+    theme_camprot(base_family='sans', base_size = 10, border=FALSE) +
+    scale_x_continuous(limits=c(0, 1), breaks=seq(0,1,0.2), name='Fraction correct read assignment') +
+    scale_y_continuous(limits=c(NA, 1), name='Pearson correlation vs truth') +
+    ggtitle(rename_level(level)) +
+    theme(strip.background=element_blank(), panel.spacing=unit(1, "lines")) +
+    facet_grid(trna_seq_method~tally_method) +
+    theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1))
+
+  pg <- remove_clip(p)
+
+  print(p)
+  plot(pg)
+
+  png(here(sprintf('results/plots/read_assignment_vs_cor_%s.png', level)))
+  grid::grid.draw(pg)
+  dev.off()
+  
+  pdf(here(sprintf('results/plots/read_assignment_vs_cor_%s.pdf', level)))
+  grid::grid.draw(pg)
+  dev.off()
+
+}
+
+
+```
+
+
+
+
+```{r}
+sessionInfo()
+```
+
+

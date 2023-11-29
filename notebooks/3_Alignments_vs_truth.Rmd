@@ -1,0 +1,463 @@
+---
+title: "Alignments vs ground truth"
+author: "Tom Smith"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: show
+    toc: true
+  pdf_document: default
+---
+
+Here, we compare the alignments to the ground truths.
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(camprotR)
+library(ggrepel)
+library(here)
+library(ggbeeswarm)
+library(corrr)
+
+source(here('R/plot_aes.R'))
+```
+
+Define the infiles for multimapping of simulated reads
+
+```{r}
+summariseMultimapped_infiles <- Sys.glob(here('input/*_final_results.dir/multiple_mapped_summary*tsv'))
+```
+
+Read in the infiles
+
+```{r}
+summariseMultimapped <- summariseMultimapped_infiles %>% lapply(function(x){
+  read.delim(x) %>%
+    separate(input_file, into=c('trna_seq_method'), sep='_', remove=FALSE) %>%
+    mutate(sample=gsub('^([[:alpha:]]+)_', '', input_file)) %>%
+    mutate(cell_line = sapply(strsplit(gsub('Hsap_', '', sample), split='_'), '[[', 1)) %>%
+    mutate(simulation=gsub('simulation_', '', sapply(strsplit(basename(x), split='\\.'), '[[', 2)))
+}) %>%
+  bind_rows()
+
+
+```
+Plot the multimapping accuracy at anticodon level
+
+```{r}
+to_plot <- summariseMultimapped %>%
+  filter(simulation=='realistic') %>%
+  group_by(across(setdiff(colnames(.), c('anticodons', 'count')))) %>% 
+  summarise(count=sum(count)) %>%
+  ungroup() %>%
+  group_by(across(setdiff(colnames(.), c('alignments', 'agreement', 'count')))) %>%
+  mutate(fraction=count/sum(count)) %>%
+  mutate(alignments=factor(Hmisc::capitalize(alignments), levels=c('Single', 'Multiple'))) %>%
+  rowwise() %>%
+  mutate(quant_method=rename_quant(quant_method))
+
+p <- to_plot %>%
+  filter(quant_method=='Bowtie2') %>%
+  ggplot(aes(alignments, 100*fraction, fill=Hmisc::capitalize(agreement), group=interaction(alignments, agreement))) +
+  geom_quasirandom(dodge.width=.75, size=2, pch=21, colour='grey') +
+  geom_boxplot(fill=NA, colour='black', width=0.25, outlier.shape=NA,
+               position=position_dodge(width=.75), linewidth=1) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans', aspect_square=FALSE) +
+  scale_y_continuous(limits=c(0,100)) +
+  xlab('Alignments') +
+  ylab('Reads (%)') +
+  scale_fill_manual(values=get_cat_palette(2), name='Anticodon') +
+  theme(strip.background=element_blank(), aspect.ratio=2/3)
+
+print(p)
+ggsave(here('results/plots/multi_alignments_correct_anticodon_bowtie2.png'), height=4, width=5)
+ggsave(here('results/plots/multi_alignments_correct_anticodon_bowtie2.pdf'), height=4, width=5)
+
+print(p %+% to_plot + facet_wrap(~quant_method))
+ggsave(here('results/plots/multi_alignments_correct_anticodon_bowtie2_shrimp.png'), height=4, width=7)
+ggsave(here('results/plots/multi_alignments_correct_anticodon_bowtie2_shrimp.pdf'), height=4, width=7)
+```
+
+
+Define the truth2assignment infiles and read in. 
+
+```{r}
+
+truth2assignment_infiles <- Sys.glob(here('input/*final_results.dir/truth2assignment.simulation_uniform*tsv.gz'))
+
+
+
+
+initialtruth2assignment <- truth2assignment_infiles %>% lapply(function(x){
+  df <- read.delim(x)
+  
+  truth_col = colnames(df)[grep('truth', colnames(df))]
+  assignment_col = colnames(df)[grep('assignment', colnames(df))]
+  
+  df %>%
+    filter(!grepl('coli', !!sym(truth_col)), !grepl('coli', !!sym(assignment_col))) %>%
+    mutate(truth_old=!!sym(truth_col), assignment_old=!!sym(assignment_col)) %>%
+    mutate(truth=gsub('Homo_sapiens_tRNA-|Homo_sapiens_tRX-|Mus_musculus_tRNA-|Mus_musculus_tRX-', '',
+                      gsub('Homo_sapiens_MTtRNA|Mus_musculus_MTtRNA|Homo_sapiens_mito_tRNA|Mus_musculus_mito_tRNA', 'MT', !!sym(truth_col))),
+           assignment=gsub('Homo_sapiens_tRNA-|Homo_sapiens_tRX-|Mus_musculus_tRNA-|Mus_musculus_tRX-', '',
+                           gsub('Homo_sapiens_MTtRNA|Mus_musculus_MTtRNA|Homo_sapiens_mito_tRNA|Mus_musculus_mito_tRNA', 'MT', !!sym(assignment_col)))) %>%
+    separate(input_file, into=c('trna_seq_method'), sep='_', remove=FALSE) %>%
+    mutate(species=ifelse(trna_seq_method == 'quantMtRNAseq', 'Mus musculus', 'Homo sapiens')) %>%
+    mutate(sample=gsub('^([[:alpha:]]+)_', '', input_file)) %>%
+    mutate(cell_line = sapply(strsplit(gsub('Hsap_', '', sample), split='_'), '[[', 1))
+})
+
+names(initialtruth2assignment) <- gsub('simulation_uniform_', '',
+                                       sapply(strsplit(basename(truth2assignment_infiles), split='\\.'), '[[', 2))
+
+names(initialtruth2assignment)[names(initialtruth2assignment)=='simulation_uniform'] <- 'individual'
+
+truth2assignment <- NULL
+
+for(level in unique(names(initialtruth2assignment))){
+ truth2assignment[[level]] <- bind_rows(initialtruth2assignment[names(initialtruth2assignment) == level])
+}
+
+# some renaming is required for the Mt Leu and Ser genes
+truth2assignment$anticodon <- truth2assignment$anticodon %>%
+  mutate(assignment=recode(assignment,
+                     'MT-Leu-TAA'='MT-Leu2-TAA',
+                     'MT-Leu-TAG'='MT-Leu1-TAG',
+                     'MT-Ser-GCT'='MT-Ser1-GCT',
+                     'MT-Ser-TGA'='MT-Ser2-TGA'),
+         truth=recode(truth,
+                     'MT-Leu-TAA'='MT-Leu2-TAA',
+                     'MT-Leu-TAG'='MT-Leu1-TAG',
+                     'MT-Ser-GCT'='MT-Ser1-GCT',
+                     'MT-Ser-TGA'='MT-Ser2-TGA'))
+
+
+truth2assignment %>% lapply(function(x) table(x$cell_line))
+
+truth2assignment$individual <- truth2assignment$individual %>% filter(quant_method!='mimseq') 
+```
+
+Define function to summarise the agreements at the defined levels.
+```{r}
+
+get_agreement_fractions <- function(group_by_vars=c(
+  'truth', 'assignment', 'trna_seq_method', 'quant_method', 'sample','species')){
+  
+  total_counts <- truth2assignment %>% lapply(function(x){
+    x %>% group_by(across(setdiff(group_by_vars, 'assignment'))) %>%
+    summarise(total_counts=sum(count))
+  })
+  
+  
+  agreement_fractions <- truth2assignment %>% names() %>% lapply(function(x){
+    
+    all_features <- union(unique(truth2assignment[[x]]$truth), unique(truth2assignment[[x]]$assignment))
+  
+    all_features <- c(sort(all_features[grepl('MT|mito',all_features)]), sort(all_features[!grepl('MT|mito', all_features)]))
+  
+    truth2assignment[[x]] %>% 
+      group_by(across(group_by_vars)) %>%
+      summarise(count=sum(count)) %>%
+      merge(total_counts[[x]], by=setdiff(group_by_vars, 'assignment')) %>%
+      mutate(fraction=count/total_counts,
+             truth=factor(truth, levels=all_features),
+             assignment=factor(assignment, levels=all_features))
+  })
+  
+  names(agreement_fractions) <- names(truth2assignment)
+  
+  return(agreement_fractions)
+}
+```
+
+Get agreement, summarised at sample, cell_line or tRNA-Seq method level.
+```{r}
+
+to_plot_samples <- get_agreement_fractions()
+
+to_plot_cell_line <- get_agreement_fractions(
+  c('truth', 'assignment', 'trna_seq_method',  'quant_method', 'species', 'cell_line'))
+
+to_plot_method <- get_agreement_fractions(
+  c('truth', 'assignment', 'trna_seq_method',  'quant_method', 'species'))
+
+```
+
+
+
+Plot how many reads are mapped with each aligner.
+
+
+```{r, fig.height=6, fig.width=6}
+
+
+
+to_plot_totals <-  to_plot_samples %>% bind_rows(.id='level')  %>%
+  filter(truth==assignment) %>% group_by(level, sample, trna_seq_method, quant_method, species) %>%
+    summarise(sample_total=sum(total_counts), sample_correct=sum(count)) %>%
+    mutate(fraction_correct=sample_correct/sample_total) %>%
+  rowwise() %>%
+  mutate(level=factor(rename_level(level), levels=levels_rename)) %>%
+  mutate(quant_method=factor(rename_quant(quant_method), levels=quant_rename)) %>%
+  mutate(trna_seq_method=factor(rename_trna_method(trna_seq_method), levels=trna_method_rename)) 
+  
+
+
+p <- to_plot_totals %>%
+  ggplot(aes(quant_method, 100*fraction_correct, group=interaction(trna_seq_method, quant_method))) +
+  geom_quasirandom(aes(colour=trna_seq_method), dodge.width=0.5) +
+  ylim(NA, 100) +
+  scale_colour_manual(values=get_cat_palette(5), name='tRNA-Seq method') +
+  theme_camprot(border=FALSE, base_family='sans', base_size=12) +
+  theme(axis.text.x=element_text(angle=45, hjust=1, vjust=1)) +
+  xlab('Aligner') +
+  ylab('Correct alignments (%)') +
+  facet_wrap(~level, scales='free_x') +
+  theme(strip.background=element_blank())
+ 
+print(p)
+
+ggsave(here('results/plots/Correct_alignments_all.png'))
+ggsave(here('results/plots/Correct_alignments_all.pdf'))
+```
+
+
+Plot how many reads are mapped with each aligner, just for anticodon and mimseq isodecoder levels.
+
+```{r}
+p <- p %+% filter(to_plot_totals, level %in% c("Anticodon", "Mimseq isodecoder"), quant_method != 'SHRiMP') +
+   facet_grid(.~level)
+print(p)
+
+ggsave(here('results/plots/Correct_alignments_bowtie2_mimseq.png'))
+ggsave(here('results/plots/Correct_alignments_bowtie2_mimseq.pdf'))
+
+p <- p %+% filter(to_plot_totals, level %in% c("Anticodon", "Mimseq isodecoder")) +
+   facet_grid(.~level)
+print(p)
+
+ggsave(here('results/plots/Correct_alignments_bowtie2_mimseq_shrimp.png'))
+ggsave(here('results/plots/Correct_alignments_bowtie2_mimseq_shrimp.pdf'))
+
+  
+```
+
+
+Correlate how many reads are mapped with each aligner and the percentage of correct alignments.
+
+```{r}
+to_plot_mapped <- to_plot_samples$anticodon %>%
+  group_by(sample, trna_seq_method, quant_method, species) %>%
+  summarise(total_counts=sum(count)) %>%
+  rowwise() %>%
+  mutate(trna_seq_method=factor(rename_trna_method(trna_seq_method), levels=trna_method_rename)) %>%
+  mutate(quant_method=rename_quant(quant_method))
+
+p <- to_plot_mapped %>% merge(to_plot_totals, by=c('sample', 'trna_seq_method', 'quant_method', 'species')) %>%
+  ggplot(aes(100*total_counts/1E6, 100*fraction_correct)) +
+  geom_point(aes(colour=quant_method)) +
+  facet_grid(level~trna_seq_method, scales='free') +
+  xlab('Aligned reads (%)') +
+  ylab('Correct alignments (%)') +
+  theme_camprot(base_size=9, base_family='sans', aspect_square=TRUE) +
+  theme(strip.background=element_blank()) +
+  xlim(NA, 100) + 
+  ylim(NA, 100) +
+  scale_colour_manual(values=get_cat_palette(3), name='Aligner')
+
+print(p)
+
+ggsave(here('results/plots/Aligned_vs_Correct.png'))
+ggsave(here('results/plots/Aligned_vs_Correct.pdf'))
+```
+
+Identify the features with the greatest difference between tRNA-Seq methods.
+```{r}
+
+get_diff_seq_methods <- function(obj){
+  
+  diff <- obj %>%
+    filter(truth==assignment) %>%
+    pivot_wider(names_from=trna_seq_method, values_from=fraction, id_cols=truth) %>%
+    pivot_longer(cols=-truth, values_to='fraction', names_to='trna_seq_method') %>%
+    mutate(anticodon=truth)
+    
+  diff_cv <- diff %>% group_by(anticodon) %>%
+    summarise(cv=sd(fraction)/mean(fraction),
+              maxdiff=max(fraction)-min(fraction))
+  
+  diff <- merge(diff, diff_cv, by='anticodon')
+    
+  return(diff)
+}
+
+
+
+diff_quant_seq_methods <- names(to_plot_method) %>% lapply(function(level){
+  to_plot_method[[level]] %>%
+    filter(quant_method!='shrimp') %>%
+    filter(truth==assignment) %>%
+    group_by(species, quant_method) %>%
+    do(get_diff_seq_methods(.)) %>%
+    arrange(desc(maxdiff))
+})
+  
+names(diff_quant_seq_methods) <- names(to_plot_cell_line)
+
+features_to_plot_seq <- diff_quant_seq_methods %>% lapply(function(x){
+  x %>%
+    filter(trna_seq_method!='quantMtRNAseq') %>%
+    select(truth, maxdiff, quant_method) %>% unique() %>%
+    group_by(truth, species, quant_method) %>%
+    summarise(maxdiff=max(maxdiff)) %>%
+    group_by(species, quant_method) %>%
+    slice_max(maxdiff, n=3)
+})
+```
+
+
+Plot the features with the greatest difference in accuracy between tRNA-Seq methods.
+```{r}
+level <- 'anticodon'
+
+p <- to_plot_samples[[level]] %>%
+  filter(quant_method!='shrimp') %>%
+  merge(distinct(select(ungroup(features_to_plot_seq[[level]]), -quant_method)), by=c('truth', 'species')) %>%
+  #filter(truth %in% features_to_plot_seq[[level]]$truth) %>%
+  filter(truth==assignment) %>%
+  mutate(truth=factor(truth, levels=unique(features_to_plot_seq[[level]]$truth))) %>%
+  rowwise() %>%
+  mutate(quant_method=factor(rename_quant(quant_method), levels=quant_rename)) %>%
+  mutate(trna_seq_method=factor(rename_trna_method(trna_seq_method), levels=trna_method_rename)) %>%
+  ggplot(aes(truth, fraction, colour=trna_seq_method, group=trna_seq_method)) +
+  geom_quasirandom(dodge.width=0.5) +
+  #stat_summary(geom='bar', position=position_dodge()) +
+  stat_summary(geom='errorbar', fun.min='median', fun.max='median',
+               position=position_dodge(width=0.5), width=0.25, colour='black') +
+  #geom_bar(stat='identity', position=position_dodge()) +
+  facet_grid(quant_method~., space='free_x', scales='free_x') +
+  scale_shape_discrete(name='') +
+  scale_colour_manual(values=get_cat_palette(5)[2:5], name='tRNA-Seq method') +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans', aspect_square=FALSE) +
+  theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1),
+      strip.background=element_blank(),
+      panel.spacing.y=unit(5, 'mm')) +
+  ylab('Fraction correct assignment') +
+  xlab('') +
+  theme(strip.background=element_blank())
+  
+print(p)
+ggsave('../results/plots/fraction_correct_assignment_example_anticodons.png')
+ggsave('../results/plots/fraction_correct_assignment_example_anticodons.pdf')
+```
+```{r}
+saveRDS(diff_quant_seq_methods, '../results/diff_quant_seq_methods.rds')
+
+```
+
+Correlate the missincorporation profiles between samples and between tRNA-Seq methods.
+```{r}
+
+truths_iso <- to_plot_method$isodecoder %>%
+  select(quant_method, trna_seq_method, truth) %>%
+  distinct() %>%
+  group_by(quant_method, truth) %>%
+  tally() %>%
+  filter(n==4) %>%
+  select(quant_method, truth)
+  
+  
+to_plot_method_iso_cors <- to_plot_method$mimseq_isodecoder %>%
+  select(truth, assignment, quant_method, trna_seq_method, fraction, species) %>%
+  pivot_wider(names_from=trna_seq_method, values_from='fraction') %>%
+  merge(truths_iso, by=c('quant_method', 'truth')) %>%
+  replace(is.na(.), 0) %>%
+  mutate(Agreement=ifelse(truth==assignment, 'Correct', 'Incorrect'))
+
+truths_ac <- to_plot_method$anticodon %>%
+  select(quant_method, trna_seq_method, truth) %>%
+  distinct() %>%
+  group_by(quant_method, truth) %>%
+  tally() %>%
+  filter(n==4) %>%
+  select(quant_method, truth)
+  
+  
+to_plot_method_ac_cors <- to_plot_method$anticodon %>%
+  select(truth, assignment, quant_method, trna_seq_method, fraction, species) %>%
+  pivot_wider(names_from=trna_seq_method, values_from='fraction') %>%
+  merge(truths_ac, by=c('quant_method', 'truth')) %>%
+  replace(is.na(.), 0) %>%
+  mutate(Agreement=ifelse(truth==assignment, 'Correct', 'Incorrect'))
+  
+
+
+```
+
+```{r}
+
+get_all_cors <- function(obj){
+  corrr::correlate(obj, method='spearman') %>%
+    corrr::shave() %>%
+    corrr::stretch() %>%
+    filter(is.finite(r))
+  
+}
+
+to_plot_method_cors <- list('anticodon'=to_plot_method_ac_cors, 'isodecoder'=to_plot_method_iso_cors)
+
+cors_method <- to_plot_method_cors$anticodon %>%
+  filter(truth!=assignment) %>%
+  group_by(quant_method, species) %>%
+  select(-truth, -assignment, -Agreement) %>%
+  do(get_all_cors(.)) %>%
+  mutate(type='method')
+
+
+get_all_sample_cors <- function(obj){
+  obj %>%
+    select(truth, assignment, sample, fraction) %>%
+    pivot_wider(names_from=sample, values_from='fraction') %>%
+    replace(is.na(.), 0) %>%
+    select(-truth, -assignment) %>%
+    get_all_cors()
+
+}
+
+
+cors_sample <- to_plot_samples$anticodon %>%
+  filter(truth!=assignment) %>%
+  group_by(trna_seq_method, quant_method, species) %>%
+  do(get_all_sample_cors(.)) %>%
+  mutate(type='sample')
+
+
+```
+
+
+```{r}
+p <- cors_sample %>%
+  bind_rows(cors_method) %>%
+  rowwise() %>%
+  mutate(quant_method=factor(rename_quant(quant_method), levels=quant_rename)) %>%
+  filter(species=='Homo sapiens') %>%
+  ggplot(aes(quant_method, r, group=type, fill=type, shape=type)) +
+  geom_quasirandom(colour='grey30', stroke=0.4, size=2, width=0.3) + #dodge.width=0.5) +
+  theme_camprot(border=FALSE, base_family='sans', base_size=15) +
+  #scale_x_discrete(labels=c('tRNA-Seq methods', 'samples'), name='Comparison between') +
+  scale_y_continuous(limits=c(NA, 1), name="Correlation between\nmisalignment frequencies\n(Spearman's rho)") +
+  scale_fill_manual(values=get_cat_palette(3), labels=c('tRNA-Seq methods', 'Samples'), name='Comparison between') +
+  scale_shape_manual(values=c(24,21), labels=c('tRNA-Seq methods', 'Samples'), name='Comparison between') +
+  theme(aspect.ratio=1, strip.background=element_blank()) +
+  xlab('Aligner')
+  
+print(p)
+ggsave(here('results/plots/misalignment_correlations_between_methods_vs_samples.png'))
+ggsave(here('results/plots/misalignment_correlations_between_methods_vs_samples.pdf'))
+
+```
+```{r}
+sessionInfo()
+```

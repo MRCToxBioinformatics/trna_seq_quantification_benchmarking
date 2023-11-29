@@ -1,0 +1,222 @@
+---
+title: "Plot error profiles and overlap with MODOMICS"
+author: "Tom Smith"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: show
+    toc: true
+  pdf_document: default
+---
+
+Here, we plot the error profiles and overlap them with MODOMICS
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(camprotR)
+source('../R/plot_aes.R')
+```
+
+Define infiles and read in
+```{r}
+mutation_infiles <- Sys.glob('../input/*_final_results.dir/mutations_vs_modomics.tsv')
+names(mutation_infiles) <- c('Homo sapiens', 'Mus musculus')
+
+mutation_df_with_modomics_modifications <- lapply(mutation_infiles, function(x){
+  
+  df <- read.delim(x)
+
+  modification_levels=c('No modification', sort(unique(df$modification)))
+  df$modification[df$modification==''] <- 'No modification'
+  
+  df$modification <- factor(df$modification, levels=modification_levels) %>% droplevels()
+
+  return(df)
+})
+```
+
+Bind together all the results
+```{r}
+mutation_df_with_modomics_modifications <- mutation_df_with_modomics_modifications %>%
+  bind_rows(.id='species')
+
+```
+
+Summarise the results for each quantification method
+```{r}
+
+mutation_df_with_modomics_modifications_summary <- mutation_df_with_modomics_modifications %>%
+  group_by(quant_method, modification, obs_base) %>%
+  summarise(count=sum(count), total_counts=sum(total_counts), trnas=length(unique(trna))) %>%
+  ungroup() %>%
+  mutate(mutation_rate=count/total_counts)
+```
+
+Plot the misincorporation frequencies for Inosine and m1A.
+```{r, fig.width=8, fig.height=5}
+
+p <- mutation_df_with_modomics_modifications_summary %>%
+  filter(modification %in% c('I', 'm1A')) %>%
+  mutate(modification=recode(modification, 'I'='Inosine')) %>%
+  rowwise() %>%
+  mutate(quant_method=factor(rename_trna_method(quant_method), levels=trna_method_rename)) %>%
+  ggplot(aes(quant_method, 100*mutation_rate, fill=obs_base)) +
+  geom_bar(stat='identity', position='stack') +
+  facet_wrap(~modification) +
+  theme_camprot(base_size=15, base_family='sans', border=FALSE) +
+  theme(axis.text.x=element_text(angle=45, hjust=1, vjust=1), strip.background=element_blank(),
+        strip.text=element_text(size=20)) +
+  scale_fill_manual(values=get_cat_palette(4), name='Nucleotide') +
+  xlab('') +
+  ylab('Misincorporation frequency (%)') 
+
+print(p)
+ggsave('../results/plots/mutation_frequency_highlight.png')
+ggsave('../results/plots/mutation_frequency_highlight.pdf')
+```
+
+Plot the complete misincorporation infrequencies.
+```{r, fig.height=8, fig.width=17}
+p <- mutation_df_with_modomics_modifications_summary %>%
+  rowwise() %>%
+  mutate(quant_method=factor(rename_trna_method(quant_method), levels=trna_method_rename)) %>%
+  ggplot(aes(modification, 100*mutation_rate, fill=obs_base)) +
+  geom_bar(stat='identity', position='stack') +
+  facet_wrap(~quant_method, scales='free_y') +
+  theme_camprot(base_size=15, base_family='sans', border=FALSE, aspect_square=FALSE) +
+  theme(axis.text.x=element_text(angle=45, hjust=1, vjust=1), strip.background=element_blank(), aspect.ratio=1/2) +
+  scale_fill_manual(values=get_cat_palette(4), name='Nucleotide') +
+  xlab('') +
+  ylab('Misincorporation frequency (%)') 
+
+print(p)
+ggsave('../results/plots/mutation_frequency_all.png')
+ggsave('../results/plots/mutation_frequency_all.pdf')
+```
+
+Define the truncation infiles and read in.
+```{r}
+truncation_infiles <- Sys.glob('../input/*_final_results.dir/truncations_vs_modomics.tsv')
+names(truncation_infiles) <- c('Homo sapiens', 'Mus musculus')
+
+truncation_df_with_modomics_modifications <- lapply(truncation_infiles, read.delim)
+```
+
+Plot the percentage of reads with truncations.
+```{r, fig.height=6, fig.width=6}
+to_plot <- truncation_df_with_modomics_modifications %>%
+    bind_rows() %>%
+    #filter(!grepl('293_tRNA', sample)) %>%
+    mutate(truncated=start>5) %>%
+    mutate(on_or_near_mod=modification!='') %>%
+    select(truncated, on_or_near_mod, quant_method, start, frequency, sample, trna) %>%
+    distinct() %>%
+    group_by(truncated, on_or_near_mod, quant_method) %>%
+    summarise(frequency=sum(frequency)) %>%
+    group_by(quant_method) %>%
+    mutate(relative_frequency=frequency/sum(frequency)) %>%
+    arrange(desc(relative_frequency)) %>%
+    rowwise() %>%
+    mutate(quant_method=factor(rename_trna_method(quant_method), levels=trna_method_rename))
+    
+
+p <- to_plot %>%
+  filter(truncated) %>%
+  ggplot(aes(quant_method, 100*relative_frequency, fill=on_or_near_mod)) +
+  geom_bar(stat='identity') +
+  theme_camprot(border=FALSE, aspect_square=FALSE, base_size=15, base_family='sans') +
+  xlab('') +
+  ylab('Truncated reads (%)') +
+  ylim(0,100) +
+  theme(aspect.ratio=1, axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
+  scale_fill_manual(values=c('grey', get_cat_palette(1)), name='Within 1\nnucleotide of\nmodification')
+
+print(p)
+ggsave('../results/plots/total_truncation_frequency.png')
+ggsave('../results/plots/total_truncation_frequency.pdf')
+```
+
+
+Plot the percentage of trunctions within 1 nucleotide of annotated mutations in MODOMICS. Note, only tRNAs with MODOMICS annotations can be used here.
+```{r, fig.width=10, fig.height=5}
+to_plot <- truncation_df_with_modomics_modifications %>%
+    bind_rows() %>%
+    filter(start>5) %>%
+    group_by(relative_to_mod_position, modification, quant_method) %>%
+    summarise(frequency=sum(frequency)) %>%
+    group_by(quant_method) %>%
+    mutate(relative_frequency=frequency/sum(frequency)) %>%
+    arrange(desc(relative_frequency)) %>%
+    filter(modification!='') %>%
+    rowwise() %>%
+    mutate(quant_method=factor(rename_trna_method(quant_method), levels=trna_method_rename))
+    
+
+keep_mods <- to_plot %>% group_by(modification) %>% summarise(total_freq=sum(relative_frequency))  %>%
+arrange(desc(total_freq))%>% 
+pull(modification) %>% head(8)
+
+p <- to_plot %>%
+  filter(modification %in% keep_mods) %>%
+  mutate(modification=factor(modification, levels=rev(keep_mods))) %>%
+  ggplot(aes(relative_to_mod_position, 100*relative_frequency, fill=modification)) +
+  geom_bar(stat='identity', position='stack') +
+  facet_wrap(~quant_method, nrow=1) +
+  scale_x_continuous(labels=c('-1', '0', '+1'), breaks=c(-1,0,1)) +
+  scale_fill_manual(values=c('grey', get_cat_palette(7)), name='Modification') +
+  theme_camprot(border=FALSE, aspect_square=TRUE, base_size=15, base_family='sans') +
+    xlab('Position relative to modification') +
+  ylab('Truncated reads (%)') +
+  theme(strip.background=element_blank()) +
+  ylim(0, 40)
+
+print(p)
+ggsave('../results/plots/truncation_frequency_around_mutations.pdf')
+ggsave('../results/plots/truncation_frequency_around_mutations.png')
+```
+
+Define the truncations summary infiles and read in.
+```{r}
+truncation_summary_infiles <- Sys.glob('../input/*_final_results.dir/truncations_summary.tsv')
+names(truncation_summary_infiles) <- c('Homo sapiens', 'Mus musculus')
+
+
+truncation_summary_df <- lapply(truncation_summary_infiles, read.delim) %>% bind_rows()
+
+```
+
+Plot the truncation profiles.
+```{r}
+
+p <- truncation_summary_df %>%
+  group_by(quant_method) %>%
+  mutate(relative_frequency=total_frequency/sum(total_frequency)) %>%
+  rowwise() %>%
+  mutate(quant_method=factor(rename_trna_method(quant_method), levels=trna_method_rename)) %>%
+  #filter(start<=50) %>%
+  ggplot(aes(start, relative_frequency, colour=quant_method)) +
+  geom_line() +
+  ylim(0, 1) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  theme(strip.background=element_blank()) +
+  scale_colour_manual(values=get_cat_palette(5), name='') +
+  xlab("Read truncation (nucleotides from 3')") +
+  ylab('Reads (%)')
+
+print(p)
+ggsave('../results/plots/truncation_frequency_per_position.pdf')
+ggsave('../results/plots/truncation_frequency_per_position.png')
+
+p2 <- p + coord_cartesian(xlim=c(5, NA), ylim=c(0,0.1))
+print(p2)
+ggsave('../results/plots/truncation_frequency_per_position_zoom.pdf')
+ggsave('../results/plots/truncation_frequency_per_position_zoom.png')
+
+```
+```{r}
+sessionInfo()
+```
+
+
+

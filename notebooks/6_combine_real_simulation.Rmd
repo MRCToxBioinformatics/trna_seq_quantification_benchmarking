@@ -1,0 +1,223 @@
+---
+title: "Comparing quantification from real data and simulations"
+author: "Tom Smith"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: show
+    toc: true
+  pdf_document: default
+---
+
+```{r}
+library(here)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(camprotR)
+library(ggbeeswarm)
+library(biobroom)
+
+source('../R/plot_aes.R')
+```
+
+Here, we compare the quantifications from the read data and the observations from the simulations to see if the simulations can illuminate potentially troublesome features that can't be quantified properly. Define the infiles
+
+```{r}
+infiles <- NULL
+infiles[['isodecoder']] = Sys.glob(here('input/*final_results.dir/simulation_null*ConcatenateEstimateIsodecoder.tsv'))
+
+infiles[['anticodon']] = Sys.glob(here('input/*final_results.dir/simulation_null*ConcatenateEstimateAnticodon.tsv'))
+
+infiles[['individual']] = Sys.glob(here('input/*final_results.dir/simulation_null*ConcatenateEstimate.tsv'))
+print(infiles)
+```
+
+Read the infiles and normalise the estimated read counts (`NumReads`) by the total counts.
+
+```{r}
+real_counts <- infiles %>% lapply(function(x)
+  lapply(x, function(y){
+    data <- read.delim(y, sep='\t') %>%
+      group_by(input_file, quant_method, tally_method) %>%
+      mutate(NumReads_norm=1E6*NumReads/(sum(NumReads))) %>%
+      mutate(trna_seq_method=sapply(strsplit(input_file, split='_'), '[[', 1)) %>%
+      mutate(sample=gsub('mimtRNAseq_Hsap_', '', input_file))
+
+    return(data)
+
+  }) %>% bind_rows())
+
+# some renaming is required for the Mt Leu and Ser genes
+real_counts$anticodon <- real_counts$anticodon %>%
+  mutate(Name=recode(Name,
+                     'Homo_sapiens_MTtRNA-Leu-TAG'='Homo_sapiens_MTtRNA-Leu1-TAG',
+                     'Homo_sapiens_MTtRNA-Leu-TAA'='Homo_sapiens_MTtRNA-Leu2-TAA',
+                     'Homo_sapiens_MTtRNA-Ser-GCT'='Homo_sapiens_MTtRNA-Ser1-GCT',
+                     'Homo_sapiens_MTtRNA-Ser-TGA'='Homo_sapiens_MTtRNA-Ser2-TGA'))
+
+
+
+```
+
+
+Determine the average reads per cell line in each experiment.
+```{r}
+per_trna_seq_method_tables <- real_counts %>% lapply(function(x){
+  x <- x %>%
+    mutate(input_file=gsub('Hsap_', '', input_file)) %>%
+    mutate(input_file=gsub('hESC_', 'hESC', input_file)) %>%
+    separate(input_file, into=c(NA, 'cell_line', 'replicate'), remove=FALSE) %>%
+    group_by(Name, trna_seq_method, quant_method, tally_method, cell_line) %>%
+    summarise(NumReads_norm=mean(NumReads_norm, na.rm=TRUE))
+
+  per_trna_seq_method_table <- unique(x$trna_seq_method) %>%
+    lapply(function(tsm){
+      x %>%
+        filter(trna_seq_method==tsm)
+    })
+  
+  names(per_trna_seq_method_table) <- unique(x$trna_seq_method)
+  
+  return(per_trna_seq_method_table)
+})
+
+
+per_trna_seq_method_tables$anticodon$mimtRNAseq
+```
+
+
+
+
+
+
+
+
+
+```{r}
+real_differences <- NULL
+for(level in names(per_trna_seq_method_tables)){
+  real_differences[[level]] <- NULL
+  for(seqmethod in names(per_trna_seq_method_tables[[level]])){
+    .data <- per_trna_seq_method_tables[[level]][[seqmethod]]
+    cell_lines <- sort(unique(.data$cell_line))
+    if(length(cell_lines)==1){
+      next()
+    } else{
+      cell_lines <- cell_lines[1:2]
+    }
+    
+    print(c(level, seqmethod, cell_lines))
+    .data <- .data %>% filter(cell_line  %in% cell_lines) %>%
+      pivot_wider(names_from=cell_line, values_from = NumReads_norm)
+    .data$diff <- .data[[cell_lines[1]]]/.data[[cell_lines[2]]]
+    .data$mean <- (.data[[cell_lines[1]]] + .data[[cell_lines[2]]] ) / 2
+    real_differences[[level]][[seqmethod]] <- .data
+  }
+}
+
+
+
+```
+
+
+
+```{r}
+uniform_differences <- readRDS('../results/uniform_differences.rds')
+
+to_plot <- NULL
+for(level in names(real_differences)){
+  uniform <- uniform_differences[[level]] %>% lapply(function(x){
+    x %>% select(Name,trna_seq_method, quant_method, tally_method, mean, diff)
+    }) %>% bind_rows()
+  
+  real <- real_differences[[level]] %>% lapply(function(x){
+    x %>% select(Name,trna_seq_method, quant_method, tally_method, mean, diff)
+    }) %>% bind_rows()
+  
+  to_plot[[level]] <- merge(uniform, real, by=c('Name', 'trna_seq_method', 'quant_method', 'tally_method'), suffixes = c(".uniform",".real")) %>%
+    filter(mean.uniform>0, mean.real>0) %>%
+    #filter(tally_method!='random_single') %>%
+    filter(quant_method=='bowtie2')
+}
+names(to_plot) <- names(real_differences)
+```
+
+
+
+Define the desired order for the tally methods for plotting purposes.
+
+```{r}
+tally_method_levels <- c('random_single',
+                         'fractional',
+                         'no_multi',
+                         'mapq10',
+                         'decision',
+                         'salmon',
+                         'mimseq')
+
+```
+
+```{r}
+
+get_lm_summary <- function(obj){
+  lmfit <- lm(formula=log_real~0+log_uniform, obj)
+  
+  res <- tidy(lmfit)
+  res$rsquared <- summary(lmfit)$r.squared
+  return(res)
+}
+```
+
+
+
+```{r}
+lmfits <- to_plot %>% lapply(function(x){
+  x %>%
+    filter(is.finite(diff.real), is.finite(diff.uniform)) %>%
+    mutate(log_real=log2(diff.real), log_uniform=log2(diff.uniform)) %>%
+    mutate(log_real=ifelse(is.finite(log_real), log_real, NA),
+           log_uniform=ifelse(is.finite(log_uniform), log_uniform, NA)) %>%
+    group_by(trna_seq_method, quant_method, tally_method) %>%
+    group_modify(~get_lm_summary(.)) %>%
+    mutate(facet=paste(trna_seq_method, tally_method, sep=', ')) %>%
+    mutate(tally_method=factor(tally_method, levels=tally_method_levels)) %>%
+    mutate(var_explained=ifelse(estimate>0, rsquared, 0))
+})
+
+
+lmfits$anticodon
+```
+
+```{r}
+
+lmfits_to_plot <-lmfits %>%
+  bind_rows(.id='level') %>%
+  rowwise() %>%
+  mutate(tally_method=factor(tally_methods_rename[[tally_method]], levels=tally_methods_rename)) %>%
+  mutate(trna_seq_method=factor(rename_trna_method(trna_seq_method), levels=trna_method_rename)) %>%
+  mutate(level=factor(rename_level(level), levels=levels_rename))
+
+lmfits_to_plot %>% group_by(level, tally_method) %>% summarise(max_var=max(var_explained))
+
+p <- lmfits_to_plot %>%
+  ggplot(aes(tally_method, 100*var_explained, colour=trna_seq_method)) +
+  geom_hline(yintercept=0, linetype=2, colour='grey') +
+  geom_point() +
+  stat_summary(geom='point', fun='mean', colour='black', pch=4) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  theme(strip.background = element_blank()) +
+  scale_colour_manual(values=get_cat_palette(7), name='tRNA-Seq method') +
+  xlab('') +
+  ylab('Variance explained\nby fold-change in\nsimulation (%)') +
+  facet_wrap(~level) +
+  theme(axis.text.x=element_text(angle=45, hjust=1, vjust=1))
+
+print(p)
+ggsave('../results/plots/variance_explained_by_tech.png')
+ggsave('../results/plots/variance_explained_by_tech.pdf')
+```
+```{r}
+sessionInfo()
+```
+

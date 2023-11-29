@@ -1,0 +1,76 @@
+---
+title: "Plot multimapping frequency"
+author: "Tom Smith"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: show
+    toc: true
+  pdf_document: default
+---
+
+Here, we plot the percentage of reads which are multimapped at each level of tRNA nomenclature.
+
+```{r}
+library(here)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(camprotR)
+
+source('../R/plot_aes.R')
+```
+
+Define infiles and read in data
+
+```{r}
+
+infiles = Sys.glob(here('input/*_final_results.dir/all.mm.tsv'))
+inf <- infiles[[1]]
+
+mm <- lapply(infiles, function(inf){
+  mm <- read.delim(inf, header=FALSE, col.names=c('bam', 'level', 'type', 'count')) %>%
+    filter(level!='level') %>%
+    mutate(bam=basename(bam)) %>%
+    mutate(bam=gsub('_tRNA', '', bam))
+  mm <- mm %>% separate(bam, into=c('trna_seq_method', 'cell_line', 'replicate', NA, NA))
+}) %>% bind_rows() %>%
+  mutate(trna_seq_method=factor(lapply(trna_seq_method, rename_trna_method), levels=trna_method_rename))
+
+
+```
+
+Plot the multimapping percentage
+```{r, fig.height=6}
+to_plot <- mm %>%
+  mutate(level=case_when(level=='aa' ~ 'Amino acid',
+                         level=='ac' ~ 'Anticodon',
+                         level=='tid' ~ 'Transcript ID',
+                         level=='gid' ~ 'Gene Locus ID')) %>%
+  mutate(level=factor(level, levels=c('Gene Locus ID', 'Transcript ID', 'Anticodon', 'Amino acid'))) %>%
+  group_by(trna_seq_method, level, type) %>%
+  summarise(count=sum(count)) %>%
+  group_by(trna_seq_method, level) %>%
+  mutate(perc=100*(count/sum(count)))
+
+
+p <-to_plot  %>%
+  ggplot(aes(level, perc, fill=type, group=type)) +
+  geom_bar(stat='identity') +
+  facet_wrap(~trna_seq_method, scales='free_y', ncol=1) +
+  theme_camprot(base_size=10, border=FALSE, base_family='sans', aspect_square=FALSE) +
+  theme(strip.background=element_blank(), aspect=1/3, axis.text.x = element_text(angle=45, vjust=1, hjust=1)) +
+  xlab('') +
+  ylab('Reads (%)') +
+  geom_text(data=(filter(to_plot, type=='single')),
+            aes(label=round(perc, 1)), position=position_stack(vjust=0.5)) +
+  scale_fill_manual(values=c(get_cat_palette(1), 'grey'), name='Mapping to', labels=c('Multiple tRNAs', 'Single tRNA'))
+
+print(p)
+
+ggsave(here('results/plots/multimap_network_counts.png'))
+ggsave(here('results/plots/multimap_network_counts.pdf'))
+```
+
+
+
