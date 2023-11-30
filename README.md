@@ -1,7 +1,7 @@
 # tRNA-Seq quantification benchmarking manuscript analysis 
 Processing and plotting of output from the tRNA-Seq simulation and quantification pipeline. 
 
-Manuscript pre-print now available here.
+Manuscript pre-print coming shortly..
 
 ## Repository structure
 
