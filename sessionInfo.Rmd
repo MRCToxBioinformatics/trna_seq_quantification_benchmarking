@@ -1,0 +1,32 @@
+---
+title: "Session info"
+output:
+  html_document:
+    df_print: paged
+---
+
+Here, we import the libraries used and then show the session info for reference
+```{r, message=FALSE, warning=FALSE}
+### From CRAN
+library(RColorBrewer)
+library(corrr)
+library(dplyr)
+library(ggbeeswarm)
+library(ggplot2)
+library(ggrepel)
+library(here)
+library(pheatmap)
+library(tidyr)
+
+### From Bioconductor
+library(biobroom)
+
+### From Github
+library(camprotR)
+```
+
+```{r}
+sessionInfo()
+```
+
+
