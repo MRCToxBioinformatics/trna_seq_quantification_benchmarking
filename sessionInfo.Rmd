@@ -1,8 +1,7 @@
 ---
 title: "Session info"
 output:
-  html_document:
-    df_print: paged
+  pdf_document: default
 ---
 
 Here, we import the libraries used and then show the session info for reference

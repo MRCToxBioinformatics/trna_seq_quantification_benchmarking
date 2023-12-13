@@ -13,4 +13,4 @@ Manuscript pre-print coming shortly..
 
 
 ## Dependencies
-The R packages used and their versions are shown in [sessionInfo.html](sessionInfo.html)
+The R packages used and their versions are shown in [sessionInfo.pdf](sessionInfo.pdf)
